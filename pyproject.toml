@@ -1,0 +1,61 @@
+[build-system]
+requires = ["hatchling>=1.26,<1.28"]
+build-backend = "hatchling.build"
+
+[project]
+name = "t4l-agent"
+version = "0.3.0"
+description = "Complete T4L Trainer agent package with embedded server and in-app chat loop."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{ name = "T4L Trainer" }]
+dependencies = [
+  "PyYAML>=6.0,<7",
+  "t4l-server>=0.8.0,<0.9.0",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: End Users/Desktop",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
+]
+
+[project.urls]
+Homepage = "https://github.com/BigSlikTobi/t4l-agent"
+Repository = "https://github.com/BigSlikTobi/t4l-agent"
+Issues = "https://github.com/BigSlikTobi/t4l-agent/issues"
+
+[project.optional-dependencies]
+dev = [
+  "build>=1.3",
+  "mypy>=1.18",
+  "pytest>=8.0",
+  "ruff>=0.14",
+  "twine>=6.2",
+  "types-PyYAML>=6.0.12",
+]
+
+[project.scripts]
+t4l-agent = "t4l_agent.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/t4l_agent"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src", "tests"]

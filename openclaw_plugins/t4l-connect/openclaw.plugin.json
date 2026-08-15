@@ -1,0 +1,52 @@
+{
+  "id": "t4l-connect",
+  "name": "T4L Connect",
+  "description": "Bootstraps and connects T4L from a gateway-verified owner command.",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "agentId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "agentName": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 100
+      },
+      "connectorBaseUrl": {
+        "type": "string",
+        "minLength": 1
+      },
+      "connectorPort": {
+        "type": "integer",
+        "minimum": 1024,
+        "maximum": 65535
+      },
+      "installRoot": {
+        "type": "string",
+        "minLength": 1
+      },
+      "pythonExecutable": {
+        "type": "string",
+        "minLength": 1
+      },
+      "openclawExecutable": {
+        "type": "string",
+        "minLength": 1
+      },
+      "serviceMode": {
+        "type": "string",
+        "enum": ["auto", "systemd", "launchd", "none"]
+      },
+      "releasePolicyPath": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}

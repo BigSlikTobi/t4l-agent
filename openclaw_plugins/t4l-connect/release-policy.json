@@ -1,0 +1,8 @@
+{
+  "schema": "t4l_release_policy.v1",
+  "releaseId": "t4l-agent-0.3.0",
+  "version": "0.3.0",
+  "manifestUrl": "https://github.com/BigSlikTobi/t4l-agent/releases/download/v0.3.0/t4l-release-0.3.0.json",
+  "signingKeyId": "t4l-release-2026-01",
+  "signingPublicKey": "REPLACE_DURING_RELEASE_BUILD"
+}

@@ -1,0 +1,35 @@
+{
+  "name": "@t4l/openclaw-t4l-connect",
+  "version": "0.2.0",
+  "type": "module",
+  "description": "Owner-gated bootstrap, phone pairing, and local connector proxy for T4L on OpenClaw",
+  "license": "MIT",
+  "files": [
+    "bin",
+    "dist",
+    "openclaw.plugin.json",
+    "release-policy.json"
+  ],
+  "bin": {
+    "t4l-openclaw-bootstrap": "./bin/t4l-bootstrap.mjs"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.7.1-2 <2027.0.0"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "prepack": "node bin/verify-release-policy.mjs",
+    "pack:check": "T4L_ALLOW_PLACEHOLDER_PACKAGE=development-only npm pack --dry-run"
+  },
+  "openclaw": {
+    "compat": {
+      "pluginApi": ">=2026.7.1-2"
+    },
+    "install": {
+      "minHostVersion": ">=2026.7.1-2"
+    },
+    "extensions": [
+      "./dist/index.js"
+    ]
+  }
+}
