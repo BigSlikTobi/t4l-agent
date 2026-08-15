@@ -4,7 +4,9 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  # Required only while verifying assets held in a private draft release.
+  # Revert to read after the release receipts have been downloaded.
+  contents: write
 
 jobs:
   verify:
