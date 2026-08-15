@@ -9,11 +9,11 @@ owner must approve one bootstrap plugin install in OpenClaw Control UI or run:
 openclaw plugins install npm:@t4l-trainer/openclaw-t4l-connect@0.2.0 --pin --force
 ```
 
-That package is not published yet. The command is the production contract, not
-a usable release command today. The source policy intentionally has no release
-key and cannot install the full connector.
+That exact package is public and pins the signed T4L v0.3.0 release. The source
+policy intentionally remains a fail-closed placeholder; production packages
+are staged with the real release key and manifest before publication.
 
-After publication the user flow is:
+The user flow is:
 
 1. Enter the existing OpenClaw Gateway URL in T4L Trainer.
 2. The app creates a phone key and one ten-minute pairing code.

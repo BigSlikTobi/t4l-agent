@@ -23,15 +23,16 @@ The user does one host-approved action before opening T4L Trainer: install the
 small `t4l-connect` bootstrap plugin into an existing OpenClaw Gateway. Raw
 OpenClaw cannot safely let an unauthenticated phone install host software.
 
-The production command will be:
+The production command is:
 
 ```bash
 openclaw plugins install npm:@t4l-trainer/openclaw-t4l-connect@0.2.0 --pin --force
 ```
 
-`@t4l-trainer/openclaw-t4l-connect@0.2.0` is **not published yet**. The checked-in
-release policy is deliberately a fail-closed build placeholder. For local
-development, build the tarball and install its absolute path:
+`@t4l-trainer/openclaw-t4l-connect@0.2.0` is public and pins the signed T4L
+v0.3.0 release. The checked-in source policy remains a fail-closed build
+placeholder so an unstaged source package cannot masquerade as production. For
+local development, build the tarball and install its absolute path:
 
 ```bash
 cd openclaw_plugins/t4l-connect
@@ -64,9 +65,10 @@ native non-delivering agent boundary this flow requires. Startup fails closed.
 
 ## Advanced manual install
 
-After PyPI publication, the command will be `pipx install t4l-agent`. Today,
-both T4L packages are unpublished. Build both local wheels, then make pipx
-preinstall the exact server wheel before it installs the agent wheel:
+The Python packages are distributed through the signed GitHub release and
+offline wheelhouse, not PyPI. The signed installer is the normal path. For a
+manual development install, build both local wheels, then make pipx preinstall
+the exact server wheel before it installs the agent wheel:
 
 ```bash
 cd /absolute/path/to/t4l-server
