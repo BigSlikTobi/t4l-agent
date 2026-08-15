@@ -81,7 +81,7 @@ jobs:
             --server-wheel build/release/t4l_server-0.8.0-py3-none-any.whl \
             --wheelhouse build/release/t4l-python-wheelhouse-0.3.0.tar.gz \
             --instructions build/release/t4l-agent-instructions-0.3.0.tar.gz \
-            --staged-plugin build/plugin \
+            --staged-plugin "$GITHUB_WORKSPACE/build/plugin" \
             --output build/receipts/linux-x64-cp${{ matrix.cp }}.json \
             --plugin-smoke-command "$GITHUB_WORKSPACE/scripts/openclaw_lifecycle_smoke.py"
 
