@@ -26,10 +26,10 @@ OpenClaw cannot safely let an unauthenticated phone install host software.
 The production command will be:
 
 ```bash
-openclaw plugins install npm:@t4l/openclaw-t4l-connect@0.2.0 --pin --force
+openclaw plugins install npm:@t4l-trainer/openclaw-t4l-connect@0.2.0 --pin --force
 ```
 
-`@t4l/openclaw-t4l-connect@0.2.0` is **not published yet**. The checked-in
+`@t4l-trainer/openclaw-t4l-connect@0.2.0` is **not published yet**. The checked-in
 release policy is deliberately a fail-closed build placeholder. For local
 development, build the tarball and install its absolute path:
 

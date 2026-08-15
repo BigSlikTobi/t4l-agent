@@ -1,5 +1,5 @@
 {
-  "name": "@t4l/openclaw-t4l-connect",
+  "name": "@t4l-trainer/openclaw-t4l-connect",
   "version": "0.2.0",
   "type": "module",
   "description": "Owner-gated bootstrap, phone pairing, and local connector proxy for T4L on OpenClaw",

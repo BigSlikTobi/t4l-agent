@@ -260,10 +260,10 @@ _PAIRING_CODE_RE = re.compile(r"^[A-Za-z0-9-]{4,64}$")
 _MANIFEST_NAME = "t4l-bootstrap.json"
 _ROLLBACK_ROOT = "t4l-bootstrap/rollback"
 _OPENCLAW_PLUGIN_ID = "t4l-connect"
-_OPENCLAW_PLUGIN_PACKAGE = "@t4l/openclaw-t4l-connect"
+_OPENCLAW_PLUGIN_PACKAGE = "@t4l-trainer/openclaw-t4l-connect"
 _OPENCLAW_PLUGIN_VERSION = "0.2.0"
 _OPENCLAW_PLUGIN_DIGEST = (
-    "170515cc2f1f120b0500b1ffa742f57ec43ec1e0c564640ca29f3a9181223bf5"
+    "6e126b1ddb6cd313d52cbba876d6ffcfa34fdd4f33225d1fa6567f47ad0d1761"
 )
 _OPENCLAW_RUNTIME_MIN_VERSION = "2026.7.1-2"
 _OPENCLAW_PLUGIN_DIGEST_FILES = (

@@ -6,7 +6,7 @@ Raw OpenClaw cannot accept host software from an unauthenticated phone. The
 owner must approve one bootstrap plugin install in OpenClaw Control UI or run:
 
 ```bash
-openclaw plugins install npm:@t4l/openclaw-t4l-connect@0.2.0 --pin --force
+openclaw plugins install npm:@t4l-trainer/openclaw-t4l-connect@0.2.0 --pin --force
 ```
 
 That package is not published yet. The command is the production contract, not

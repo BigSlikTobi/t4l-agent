@@ -518,7 +518,7 @@ export function bootstrapDiscovery(agentId, operation = null) {
     },
     bootstrap: {
       status: operation?.status || "ready",
-      package: "@t4l/openclaw-t4l-connect",
+      package: "@t4l-trainer/openclaw-t4l-connect",
       version: "0.2.0",
       installCommand: "/t4l connect CODE",
       retryAfterSeconds: 3,

@@ -151,7 +151,7 @@ class FakeOpenClawRunner:
             payload: dict[str, object] = {
                 "plugin": {
                     "id": "t4l-connect",
-                    "packageName": "@t4l/openclaw-t4l-connect",
+                    "packageName": "@t4l-trainer/openclaw-t4l-connect",
                     "version": "0.2.0",
                     "source": str(self.install_path / "dist" / "index.js"),
                 },
