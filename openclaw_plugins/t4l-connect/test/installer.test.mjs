@@ -237,6 +237,101 @@ test("dry-run generates isolated service command without provider settings", asy
   }
 });
 
+test("install bootstraps pinned pip without host ensurepip", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "t4l-installer-no-ensurepip-"));
+  const release = signedRelease();
+  const policyPath = join(scratch, "policy.json");
+  const root = join(scratch, "state", "coach-01");
+  const byUrl = new Map([
+    [release.policy.manifestUrl, release.bytes],
+    ...release.artifacts.map((item) => [item.url, item.bytes]),
+  ]);
+  const commands = [];
+  try {
+    await writeFile(policyPath, JSON.stringify(release.policy));
+    const request = {
+      schema: "t4l_host_install_request.v1",
+      action: "install",
+      operationId: "op_noensurepip1234",
+      agentId: "coach-01",
+      agentName: "Coach",
+      profile: "coach-01",
+      root,
+      homeDir: join(scratch, "home", "coach-01"),
+      serviceHomeDir: join(scratch, "service-home"),
+      stateDir: join(scratch, "openclaw", "coach-01"),
+      configPath: join(scratch, "openclaw", "coach-01", "custom.json"),
+      pluginDir: new URL("..", import.meta.url).pathname,
+      releasePolicyPath: policyPath,
+      ownerIdentity: "slack:default:u123",
+      openclawExecutable: "/opt/openclaw/bin/openclaw",
+      nodeExecutable: process.execPath,
+      pythonExecutable: "/usr/bin/python3.12",
+      serviceMode: "systemd",
+      port: 19001,
+    };
+    const installer = new HostInstaller({
+      platform: "linux",
+      uid: 1000,
+      sleep: async () => {},
+      fetchImpl: async (url) => {
+        if (String(url).includes("127.0.0.1:19001")) {
+          return new Response(JSON.stringify({
+            agentId: "coach-01",
+            installation: {
+              targetRelease: {
+                releaseId: release.policy.releaseId,
+                version: release.policy.version,
+                manifestSha256: release.manifestSha256,
+              },
+            },
+          }), { status: 200 });
+        }
+        const bytes = byUrl.get(String(url));
+        if (!bytes) throw new Error(`unexpected URL ${url}`);
+        return new Response(bytes, {
+          status: 200,
+          headers: { "content-length": String(bytes.length) },
+        });
+      },
+      run: async (argv, options = {}) => {
+        commands.push({ argv, options });
+        if (argv.at(-1) === "--version") {
+          return argv[0].includes("openclaw")
+            ? { code: 0, stdout: "OpenClaw 2026.7.1-2", stderr: "" }
+            : { code: 0, stdout: "Python 3.12.4", stderr: "" };
+        }
+        if (argv[1]?.endsWith("extract_instructions.py")) {
+          await mkdir(argv[3], { recursive: true });
+          if (argv[3].endsWith("wheelhouse")) {
+            await writeFile(join(argv[3], "pip-26.1.2-py3-none-any.whl"), "pinned");
+          }
+          return { code: 0, stdout: "", stderr: "" };
+        }
+        if (argv[1] === "-m" && argv[2] === "venv") {
+          await mkdir(join(argv.at(-1), "bin"), { recursive: true });
+          await writeFile(join(argv.at(-1), "bin", "python"), "python");
+        }
+        return { code: 0, stdout: "", stderr: "" };
+      },
+    });
+
+    const result = await installer.execute(request);
+
+    assert.equal(result.ok, true);
+    const venv = commands.find((item) => item.argv[1] === "-m" && item.argv[2] === "venv");
+    assert.ok(venv);
+    assert.equal(venv.argv[3], "--without-pip");
+    const pip = commands.find((item) => item.argv[1] === "-m" && item.argv[2] === "pip");
+    assert.ok(pip);
+    assert.match(pip.options.env.PYTHONPATH, /pip-26\.1\.2-py3-none-any\.whl$/);
+    assert.equal(pip.options.env.PIP_NO_INDEX, "1");
+    assert.ok(pip.argv.includes("--no-index"));
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
 test("host request rejects traversal and provider controls before mutation", async () => {
   const root = await mkdtemp(join(tmpdir(), "t4l-installer-invalid-"));
   const base = {
@@ -436,6 +531,15 @@ test("host update restarts the service and applies the pinned runtime release", 
         }
         if (argv[0] === process.execPath && argv.at(-1) === "--version") {
           return { code: 0, stdout: "OpenClaw 2026.7.1-2", stderr: "" };
+        }
+        if (argv[1]?.endsWith("extract_instructions.py")) {
+          await mkdir(argv[3], { recursive: true });
+          if (argv[3].endsWith("wheelhouse")) {
+            await writeFile(
+              join(argv[3], "pip-26.1.2-py3-none-any.whl"),
+              "pinned",
+            );
+          }
         }
         return { code: 0, stdout: "", stderr: "" };
       },

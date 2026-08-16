@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import hashlib
 import json
+import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -76,6 +76,14 @@ class OpenClawRuntimeCoach:
         web_search: bool = False,
         purpose: str = "coach",
     ) -> RuntimeTurnResult:
+        del temperature, max_tokens
+        tool_contract = (
+            "web_search is the only allowed tool for this turn. Use it only to "
+            "locate an exact exercise-specific YouTube Short; the T4L host "
+            "verifies the result."
+            if web_search
+            else "Do not call tools for this turn."
+        )
         envelope = {
             "schema": "t4l.runtime-coach-turn.v1",
             "purpose": purpose,
@@ -83,20 +91,18 @@ class OpenClawRuntimeCoach:
                 {"role": message.role, "content": message.content}
                 for message in messages
             ],
-            "hostHints": {
-                "temperature": temperature,
-                "maxOutputTokens": max_tokens,
-                "researchToolsAllowed": web_search,
-                "researchScope": "youtube.com" if web_search else None,
-            },
             "contract": (
                 "Treat messages as the complete current turn. Return only the "
                 "requested assistant text. Do not deliver to a channel. The T4L "
-                "host validates every structured write and every video URL."
+                "host validates every structured write and every video URL. "
+                + tool_contract
             ),
         }
         serialized = dumps_compact(envelope)
-        session_key = _session_key(purpose, serialized)
+        # The envelope already carries the complete bounded context. A fresh
+        # session prevents OpenClaw from replaying an earlier turn on retries or
+        # repeated readiness checks.
+        session_key = _session_key(purpose)
         argv = [
             self.executable,
             "--profile",
@@ -176,10 +182,9 @@ def dumps_compact(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
-def _session_key(purpose: str, serialized: str) -> str:
-    digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:24]
+def _session_key(purpose: str) -> str:
     safe_purpose = "readiness" if purpose == "readiness" else "coach"
-    return f"t4l-{safe_purpose}-{digest}"
+    return f"t4l-{safe_purpose}-{secrets.token_hex(12)}"
 
 
 def _reply_texts(document: Mapping[str, Any]) -> list[str]:

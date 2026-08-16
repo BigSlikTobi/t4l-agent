@@ -685,6 +685,42 @@ export function createT4LConnectPlugin(
           if (pending?.status === "locked") {
             return text("This pairing request is locked. Start again in the app.");
           }
+          if (pending?.status === "failed") {
+            const operation = pending.operationId
+              ? await readOperation(root, pending.operationId)
+              : null;
+            if (!operation || operation.status !== "failed") {
+              return text("T4L is still closing the failed install. Retry this same command shortly.");
+            }
+            let retryStarted = false;
+            try {
+              const retry = await store.retry(pending, owner);
+              if (!retry.started) {
+                return text("T4L installation is already running for this phone.");
+              }
+              retryStarted = true;
+              const requestPath = join(
+                root,
+                "bootstrap",
+                "operations",
+                `${pending.operationId}.request.json`,
+              );
+              await readFile(requestPath);
+              spawnInstaller(spawnImpl, requestPath, "install");
+              return text(
+                "T4L installation retry started with the same phone pairing. Keep the app open.",
+              );
+            } catch (error) {
+              if (retryStarted) {
+                await store.mark(pending, "failed", {
+                  error: String(error?.message || error).slice(0, 300),
+                });
+              }
+              return text(
+                "T4L installation could not resume. Check the Gateway logs; this pairing was not replaced.",
+              );
+            }
+          }
           if (pending && pending.status !== "pending") {
             return text("This pairing request is no longer available. Start again in the app.");
           }
@@ -829,10 +865,10 @@ export function createT4LConnectPlugin(
             const body = JSON.parse((await readBody(req, 16 * 1024)).toString("utf8"));
             const record = await store.find(body?.requestId);
             if (!record || record.devicePublicKey !== body?.devicePublicKey) return errorResponse(res, 404, "pairing_not_found", "Pairing request not found.");
-            if (["expired", "superseded", "locked", "failed"].includes(record.status)) return errorResponse(res, 409, `pairing_${record.status}`, "Pairing is no longer available.");
+            if (["expired", "superseded", "locked"].includes(record.status)) return errorResponse(res, 409, `pairing_${record.status}`, "Pairing is no longer available.");
             const signature = typeof body?.challengeSignature === "string" ? Buffer.from(body.challengeSignature, "base64url") : null;
             const proofDeadline = new Date(
-              record.status === "installing"
+              record.confirmedAt && record.completionExpiresAt
                 ? record.completionExpiresAt
                 : record.expiresAt,
             ).getTime();
@@ -840,6 +876,21 @@ export function createT4LConnectPlugin(
               return errorResponse(res, 409, "pairing_expired_or_invalid", "Pairing is no longer available.");
             }
             const operation = record.operationId ? await readOperation(root, record.operationId) : null;
+            if (record.status === "failed") {
+              return jsonResponse(res, 503, {
+                error: {
+                  code: "bootstrap_install_failed",
+                  message: "T4L installation failed and was rolled back.",
+                  retryable: true,
+                },
+                bootstrap: {
+                  status: operation?.status || "failed",
+                  stage: operation?.stage || "rolled-back",
+                  operationId: record.operationId,
+                  retryAfterSeconds: 3,
+                },
+              }, { "retry-after": "3" });
+            }
             if (operation && ["failed", "rolled_back"].includes(operation.status)) {
               return errorResponse(res, 503, "bootstrap_install_failed", "T4L installation failed and was rolled back.");
             }

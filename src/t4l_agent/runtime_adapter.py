@@ -11,6 +11,7 @@ import tempfile
 import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -261,9 +262,9 @@ _MANIFEST_NAME = "t4l-bootstrap.json"
 _ROLLBACK_ROOT = "t4l-bootstrap/rollback"
 _OPENCLAW_PLUGIN_ID = "t4l-connect"
 _OPENCLAW_PLUGIN_PACKAGE = "@t4l-trainer/openclaw-t4l-connect"
-_OPENCLAW_PLUGIN_VERSION = "0.2.0"
+_OPENCLAW_PLUGIN_VERSION = "0.3.0"
 _OPENCLAW_PLUGIN_DIGEST = (
-    "6e126b1ddb6cd313d52cbba876d6ffcfa34fdd4f33225d1fa6567f47ad0d1761"
+    "eebbbacd6f14a8de76765eafc4c5f062e7b590f84e87183c1441b75c63d51f0e"
 )
 _OPENCLAW_RUNTIME_MIN_VERSION = "2026.7.1-2"
 _OPENCLAW_PLUGIN_DIGEST_FILES = (
@@ -277,6 +278,23 @@ _OPENCLAW_PLUGIN_DIGEST_FILES = (
     "bin/extract_instructions.py",
     "bin/verify-release-policy.mjs",
 )
+_LEAN_POLICY_SCHEMA = "t4l.openclaw-lean-policy.v1"
+_LEAN_POLICY_VALUES: Mapping[tuple[str, ...], object] = {
+    ("contextInjection",): "never",
+    ("skills",): [],
+    ("tools", "profile"): "minimal",
+    ("tools", "alsoAllow"): ["web_search"],
+    ("heartbeat", "every"): "0m",
+}
+
+
+@dataclass(frozen=True)
+class _OpenClawAgentEntry:
+    config_key: str
+    entry: dict[str, Any]
+    created: bool
+    legacy_roster: list[dict[str, Any]] | None = None
+
 
 _BUNDLE_REQUIREMENTS: Mapping[str, tuple[str, ...]] = {
     "docs/setup_instruction.md": ("get_planning_context", "accepted state"),
@@ -940,8 +958,12 @@ class OpenClawRuntimeAdapter(RuntimeAdapter):
                             "command plugin."
                         )
                     )
-            self._configure(spec)
-            _write_identity_marker(spec, bundle.digest)
+            lean_policy = self._configure(spec)
+            _write_identity_marker(
+                spec,
+                bundle.digest,
+                lean_policy=lean_policy,
+            )
             restarted = self._run(spec.target, "gateway", "restart", "--json")
             if restarted.returncode != 0:
                 raise RuntimeError("OpenClaw Gateway restart failed.")
@@ -975,6 +997,7 @@ class OpenClawRuntimeAdapter(RuntimeAdapter):
         bundle = verify_instruction_bundle(spec.instruction_bundle_dir)
         spec_error = _bootstrap_spec_error(spec)
         config_ok = self._config_matches(spec)
+        token_policy_ok = self._lean_agent_policy_matches(spec.target)
         plugin_ok = self._plugin_ready(spec.target)
         plugin_integrity_error = self._plugin_integrity_error(spec)
         mcp_ok = self._mcp_ready(spec.target)
@@ -992,6 +1015,7 @@ class OpenClawRuntimeAdapter(RuntimeAdapter):
             "identity": probe.ok and probe.identity_verified,
             "runtimeAgent": runtime_access.ok,
             "instructions": bundle.ok and config_ok,
+            "tokenPolicy": token_policy_ok,
             "mcp": mcp_ok,
             "pluginIntegrity": plugin_integrity_error is None,
             "gateway": gateway_ok,
@@ -1080,6 +1104,9 @@ class OpenClawRuntimeAdapter(RuntimeAdapter):
             )
         try:
             marker = _identity_marker(spec.target)
+            if isinstance(marker, str):
+                raise RuntimeError(marker)
+            self._restore_lean_agent_policy(spec.target, marker)
             skills = self._run(
                 spec.target, "config", "get", "skills.load.extraDirs", "--json"
             )
@@ -1187,7 +1214,8 @@ class OpenClawRuntimeAdapter(RuntimeAdapter):
             "OpenClaw /t4l command plugin is not installed or verified.",
         )
 
-    def _configure(self, spec: BootstrapSpec) -> None:
+    def _configure(self, spec: BootstrapSpec) -> dict[str, Any]:
+        lean_policy = self._apply_lean_agent_policy(spec.target)
         skill_result = self._run(
             spec.target, "config", "get", "skills.load.extraDirs", "--json"
         )
@@ -1251,6 +1279,223 @@ class OpenClawRuntimeAdapter(RuntimeAdapter):
             raise RuntimeError("OpenClaw runtime inspection did not register /t4l.")
         if not self._mcp_ready(spec.target):
             raise RuntimeError("OpenClaw could not probe the local T4L MCP server.")
+        return lean_policy
+
+    def _apply_lean_agent_policy(self, target: RuntimeTarget) -> dict[str, Any]:
+        state = self._agent_entry(target)
+        entry = deepcopy(state.entry)
+        marker = _identity_marker(target)
+        previous = marker.get("leanPolicy") if isinstance(marker, dict) else None
+        previous_policy = (
+            cast(dict[str, Any], previous) if isinstance(previous, dict) else None
+        )
+        previous_before = (
+            previous_policy.get("before") if previous_policy is not None else None
+        )
+        previous_valid = (
+            previous_policy is not None
+            and previous_policy.get("schema") == _LEAN_POLICY_SCHEMA
+            and isinstance(previous_before, dict)
+        )
+        before = (
+            deepcopy(previous_before)
+            if previous_valid
+            else _agent_policy_snapshot(entry)
+        )
+        for path, value in _LEAN_POLICY_VALUES.items():
+            _set_nested(entry, path, deepcopy(value))
+        applied = _agent_policy_snapshot(entry)
+        self._write_agent_entry(target, state, entry)
+        return {
+            "schema": _LEAN_POLICY_SCHEMA,
+            "rosterKey": state.config_key,
+            "entryCreated": (
+                bool(previous_policy.get("entryCreated"))
+                if previous_valid and previous_policy is not None
+                else state.created
+            ),
+            "before": before,
+            "applied": applied,
+        }
+
+    def _restore_lean_agent_policy(
+        self,
+        target: RuntimeTarget,
+        marker: dict[str, Any] | None,
+    ) -> None:
+        policy = marker.get("leanPolicy") if isinstance(marker, dict) else None
+        if (
+            not isinstance(policy, dict)
+            or policy.get("schema") != _LEAN_POLICY_SCHEMA
+            or not isinstance(policy.get("before"), dict)
+            or not isinstance(policy.get("applied"), dict)
+        ):
+            return
+        state = self._agent_entry(target)
+        if state.created or policy.get("rosterKey") != state.config_key:
+            return
+        entry = deepcopy(state.entry)
+        before = cast(dict[str, Any], policy["before"])
+        applied = cast(dict[str, Any], policy["applied"])
+        current = _agent_policy_snapshot(entry)
+        for path in _LEAN_POLICY_VALUES:
+            key = ".".join(path)
+            if current.get(key) != applied.get(key):
+                continue
+            _restore_nested(entry, path, before.get(key))
+        remove = policy.get("entryCreated") is True and (
+            not entry if state.config_key == "agents.entries" else set(entry) == {"id"}
+        )
+        self._write_agent_entry(target, state, entry, remove=remove)
+
+    def _lean_agent_policy_matches(self, target: RuntimeTarget) -> bool:
+        try:
+            state = self._agent_entry(target)
+        except RuntimeError:
+            return False
+        if state.created:
+            return False
+        return all(
+            _nested_value(state.entry, path) == (True, value)
+            for path, value in _LEAN_POLICY_VALUES.items()
+        )
+
+    def _agent_entry(self, target: RuntimeTarget) -> _OpenClawAgentEntry:
+        configured = self._run(
+            target,
+            "config",
+            "get",
+            "agents.entries",
+            "--json",
+        )
+        if configured.returncode == 0:
+            try:
+                parsed: object = json.loads(configured.stdout)
+            except json.JSONDecodeError as error:
+                raise RuntimeError(
+                    "OpenClaw agent entries are invalid JSON."
+                ) from error
+            if not isinstance(parsed, dict) or any(
+                not isinstance(key, str) or not isinstance(item, dict)
+                for key, item in parsed.items()
+            ):
+                raise RuntimeError("OpenClaw agents.entries must be an object.")
+            entries = cast(dict[str, dict[str, Any]], parsed)
+            entry = entries.get(target.agent_id)
+            if entry is not None:
+                return _OpenClawAgentEntry(
+                    config_key="agents.entries",
+                    entry=entry,
+                    created=False,
+                )
+            ids = self._listed_agent_ids(target)
+            if target.agent_id in ids:
+                return _OpenClawAgentEntry(
+                    config_key="agents.entries",
+                    entry={},
+                    created=True,
+                )
+            raise RuntimeError(
+                "T4L could not find the requested agent in OpenClaw agents.entries."
+            )
+        legacy = self._run(target, "config", "get", "agents.list", "--json")
+        if legacy.returncode == 0:
+            try:
+                parsed_legacy: object = json.loads(legacy.stdout)
+            except json.JSONDecodeError as error:
+                raise RuntimeError(
+                    "OpenClaw legacy agent roster is invalid JSON."
+                ) from error
+            if not isinstance(parsed_legacy, list) or any(
+                not isinstance(item, dict) for item in parsed_legacy
+            ):
+                raise RuntimeError("OpenClaw agents.list must be an array.")
+            roster = [cast(dict[str, Any], item) for item in parsed_legacy]
+            entry = next(
+                (item for item in roster if item.get("id") == target.agent_id),
+                None,
+            )
+            if entry is not None:
+                return _OpenClawAgentEntry(
+                    config_key="agents.list",
+                    entry=entry,
+                    created=False,
+                    legacy_roster=roster,
+                )
+            ids = self._listed_agent_ids(target)
+            if ids == {target.agent_id} and not roster:
+                return _OpenClawAgentEntry(
+                    config_key="agents.list",
+                    entry={"id": target.agent_id},
+                    created=True,
+                    legacy_roster=roster,
+                )
+            raise RuntimeError(
+                "T4L could not find the requested agent in OpenClaw agents.list."
+            )
+        ids = self._listed_agent_ids(target)
+        if ids == {target.agent_id}:
+            return _OpenClawAgentEntry(
+                config_key="agents.entries",
+                entry={},
+                created=True,
+            )
+        raise RuntimeError(
+            "T4L could not isolate the requested agent in OpenClaw configuration."
+        )
+
+    def _listed_agent_ids(self, target: RuntimeTarget) -> set[str]:
+        listed = self._run(target, "agents", "list", "--json")
+        return _openclaw_agent_ids(listed.stdout) if listed.returncode == 0 else set()
+
+    def _write_agent_entry(
+        self,
+        target: RuntimeTarget,
+        state: _OpenClawAgentEntry,
+        entry: dict[str, Any],
+        *,
+        remove: bool = False,
+    ) -> None:
+        if state.config_key == "agents.entries":
+            path = f"agents.entries.{target.agent_id}"
+            command = (
+                ("config", "unset", path)
+                if remove
+                else (
+                    "config",
+                    "set",
+                    path,
+                    json.dumps(entry, separators=(",", ":")),
+                    "--strict-json",
+                )
+            )
+        else:
+            roster = deepcopy(state.legacy_roster or [])
+            index = next(
+                (
+                    position
+                    for position, item in enumerate(roster)
+                    if item.get("id") == target.agent_id
+                ),
+                None,
+            )
+            if remove:
+                if index is not None:
+                    roster.pop(index)
+            elif index is None:
+                roster.append(entry)
+            else:
+                roster[index] = entry
+            command = (
+                "config",
+                "set",
+                "agents.list",
+                json.dumps(roster, separators=(",", ":")),
+                "--strict-json",
+            )
+        result = self._run(target, *command)
+        if result.returncode != 0:
+            raise RuntimeError("OpenClaw could not update the T4L agent policy.")
 
     def _configure_pairing_command(self, spec: BootstrapSpec) -> None:
         plugin_config = self._plugin_config(spec.target)
@@ -1295,6 +1540,7 @@ class OpenClawRuntimeAdapter(RuntimeAdapter):
             plugin_config.get("agentId") != spec.target.agent_id
             or plugin_config.get("connectorBaseUrl") != spec.resolved_connector_base_url
             or "runtimeTokenEnv" in plugin_config
+            or not self._lean_agent_policy_matches(spec.target)
         ):
             return False
         # OpenClaw resolves ${ENV_NAME} in both `mcp show` and `config get`.
@@ -1668,21 +1914,83 @@ def _apply_hermes_t4l_config(config: dict[str, Any], spec: BootstrapSpec) -> Non
     config["mcp_servers"] = servers
 
 
-def _write_identity_marker(spec: BootstrapSpec, bundle_digest: str | None) -> None:
+def _agent_policy_snapshot(entry: Mapping[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for path in _LEAN_POLICY_VALUES:
+        present, value = _nested_value(entry, path)
+        state: dict[str, Any] = {"present": present}
+        if present:
+            state["value"] = deepcopy(value)
+        result[".".join(path)] = state
+    return result
+
+
+def _nested_value(
+    document: Mapping[str, Any], path: tuple[str, ...]
+) -> tuple[bool, object]:
+    current: object = document
+    for key in path:
+        if not isinstance(current, dict) or key not in current:
+            return False, None
+        current = current[key]
+    return True, current
+
+
+def _set_nested(document: dict[str, Any], path: tuple[str, ...], value: object) -> None:
+    current = document
+    for key in path[:-1]:
+        child = current.get(key)
+        if not isinstance(child, dict):
+            child = {}
+            current[key] = child
+        current = child
+    current[path[-1]] = value
+
+
+def _restore_nested(
+    document: dict[str, Any], path: tuple[str, ...], state: object
+) -> None:
+    if not isinstance(state, dict) or state.get("present") is not True:
+        parents: list[tuple[dict[str, Any], str]] = []
+        current = document
+        for key in path[:-1]:
+            child = current.get(key)
+            if not isinstance(child, dict):
+                return
+            parents.append((current, key))
+            current = child
+        current.pop(path[-1], None)
+        for parent, key in reversed(parents):
+            child = parent.get(key)
+            if isinstance(child, dict) and not child:
+                parent.pop(key, None)
+        return
+    _set_nested(document, path, deepcopy(state.get("value")))
+
+
+def _write_identity_marker(
+    spec: BootstrapSpec,
+    bundle_digest: str | None,
+    *,
+    lean_policy: Mapping[str, Any] | None = None,
+) -> None:
+    marker: dict[str, Any] = {
+        "schema": "t4l.runtime-bootstrap.v1",
+        "runtime": spec.target.runtime.value,
+        "agentId": spec.target.agent_id,
+        "profile": spec.target.profile,
+        "instructionBundle": str(spec.instruction_bundle_dir.resolve()),
+        "bundleDigest": bundle_digest,
+        "t4lServerUrl": spec.t4l_server_url,
+        "t4lTokenEnv": spec.t4l_token_env,
+        "connectorBaseUrl": spec.resolved_connector_base_url,
+        "connectorRuntimeTokenEnv": spec.connector_runtime_token_env,
+    }
+    if lean_policy is not None:
+        marker["leanPolicy"] = dict(lean_policy)
     _write_json_atomic(
         spec.target.runtime_state_dir / _MANIFEST_NAME,
-        {
-            "schema": "t4l.runtime-bootstrap.v1",
-            "runtime": spec.target.runtime.value,
-            "agentId": spec.target.agent_id,
-            "profile": spec.target.profile,
-            "instructionBundle": str(spec.instruction_bundle_dir.resolve()),
-            "bundleDigest": bundle_digest,
-            "t4lServerUrl": spec.t4l_server_url,
-            "t4lTokenEnv": spec.t4l_token_env,
-            "connectorBaseUrl": spec.resolved_connector_base_url,
-            "connectorRuntimeTokenEnv": spec.connector_runtime_token_env,
-        },
+        marker,
     )
 
 

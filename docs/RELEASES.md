@@ -13,7 +13,10 @@ not an artifact inside the manifest it verifies.
 5. Build `t4l-agent` 0.3.x and `t4l-server` 0.8.x wheels from that stamped tree.
 6. Build one complete offline wheelhouse. It must contain all transitive wheels
    for Linux x86_64 and macOS arm64 on CPython 3.11, 3.12, and 3.13. This
-   includes PyYAML, cryptography, cffi, and pycparser where required.
+   includes PyYAML, cryptography, cffi, and pycparser where required, plus the
+   pinned `pip==26.1.2` bootstrap wheel. The installer creates
+   `venv --without-pip` and runs that wheel directly, so Debian/Ubuntu hosts do
+   not need `pythonX.Y-venv` merely to supply `ensurepip`.
 7. Build the pinned instruction archive.
 8. On every declared target, create a fresh venv with networking disabled and
    install only from the wheelhouse. Run connector startup, manifest, MCP,
@@ -49,7 +52,7 @@ python scripts/release_tools.py stage-plugin \
     build/release/agent-source/src/t4l_agent/runtime_adapter.py
 ```
 
-Build the exact locked 15-wheel dependency archive from a staging directory
+Build the exact locked 16-wheel dependency archive from a staging directory
 that contains only the pinned wheels:
 
 ```bash
@@ -66,9 +69,9 @@ contract:
 ```bash
 python scripts/release_tools.py verify-target \
   --target linux-x64-cp311 \
-  --release-id t4l-agent-0.3.0 \
-  --version 0.3.0 \
-  --agent-wheel build/release/t4l_agent-0.3.0-py3-none-any.whl \
+  --release-id t4l-agent-0.3.1 \
+  --version 0.3.1 \
+  --agent-wheel build/release/t4l_agent-0.3.1-py3-none-any.whl \
   --server-wheel build/release/t4l_server-0.8.0-py3-none-any.whl \
   --wheelhouse build/release/t4l-python-wheelhouse.tar.gz \
   --instructions build/release/t4l-instructions.tar.gz \

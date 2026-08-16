@@ -5,6 +5,7 @@ import json
 import re
 import time
 from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -27,17 +28,25 @@ hydration, supplement, weight, and body-composition questions to a registered
 dietitian or clinician. This boundary overrides every other instruction and
 applies during onboarding, planning, normal chat, and background work.
 
-Return one compact JSON object only. Never use a code fence:
-{"reply":"short athlete-facing reply","write":null}
+Return one compact JSON object only. Never use a code fence. Every response may
+also include one optional durable coaching-note patch:
+{"reply":"short athlete-facing reply","write":null,"notes":null}
 or
 {"reply":"...","write":{"tool":"write_athlete_setup_draft",
-"payload":{...}}}
+"payload":{...}},"notes":null}
 or
 {"reply":"...","write":{"tool":"write_training_block_plan",
-"payload":{...}}}
+"payload":{...}},"notes":null}
 or
 {"reply":"...","write":{"tool":"write_daily_workout_plan",
-"payload":{...}}}
+"payload":{...}},"notes":null}
+
+Use `notes` only for durable, plan-relevant intent from the latest athlete
+turn: explicit training requests, schedule/equipment/injury/recovery
+constraints, or unresolved coaching questions. Its shape is
+{"capture":true,"athleteRequests":["..."],"openQuestions":["..."],
+"summary":"..."}. Otherwise use null. Never capture nutrition, hydration,
+supplement, weight, or body-composition content.
 
 The host, not you, executes writes and enforces phone ownership. Never claim a
 draft or proposal is accepted, synced, scheduled, or applied. For onboarding,
@@ -68,14 +77,16 @@ For pain, injury, dizziness, illness, or unsafe push-through questions, be
 conservative. Missing data is unknown, not zero. Keep replies direct. No tables.
 """
 
-_INSTRUCTION_FILES = (
-    "docs/setup_instruction.md",
-    "docs/coaching_setup.md",
-    "skills/t4l-onboard-athlete/SKILL.md",
-    "skills/t4l-answer-chat/SKILL.md",
-    "skills/t4l-write-results/SKILL.md",
-    "skills/t4l-write-results/reference/payload-shapes.md",
-)
+_INSTRUCTION_FILES_BY_PURPOSE = {
+    # Queueing, writes, validation, and safety are enforced by the host. The
+    # model only needs the contract slice for its current job.
+    "onboarding": ("skills/t4l-onboard-athlete/SKILL.md",),
+    "chat": ("skills/t4l-answer-chat/SKILL.md",),
+    "planning": (
+        "skills/t4l-write-results/SKILL.md",
+        "skills/t4l-write-results/reference/payload-shapes.md",
+    ),
+}
 _MAX_INSTRUCTION_BYTES = 1_000_000
 _CHAT_MAX_TOKENS = 1_800
 _PLAN_MAX_TOKENS = 12_000
@@ -103,25 +114,6 @@ _CANONICAL_EQUIPMENT = (
     "bench",
     "squatRack",
 )
-
-COACHING_NOTE_EXTRACT_PROMPT = """You maintain standing coaching notes for the
-T4L planner. Look at one already-answered in-app chat turn. Return compact JSON
-only.
-
-Capture only durable, plan-relevant intent:
-- explicit training requests,
-- schedule, equipment, injury, or recovery constraints,
-- unresolved coaching questions.
-
-Never capture food, nutrition, hydration, supplement, weight, or
-body-composition content. Skip routine chat, thanks, and facts that are not
-durable.
-
-Output exactly one of these shapes:
-{"capture": false}
-{"capture": true, "athleteRequests": ["..."], "openQuestions": ["..."],
-"summary": "..."}
-"""
 
 SAFETY_RE = re.compile(
     r"\b(pain|hurt|hurts|injur|dizzy|dizziness|ill|sick|fever|"
@@ -209,6 +201,7 @@ class CoachDecision:
     reply: str
     tool: str | None = None
     payload: dict[str, Any] | None = None
+    note_capture: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -336,7 +329,7 @@ def answer_pending_messages(
     notes_written = 0
     setup_drafts_written = 0
     training_plans_written = 0
-    instructions: str | None = None
+    instructions: dict[str, str] = {}
     descriptor: dict[str, Any] | None = None
     for message in messages:
         seq = _coerce_int(message.get("seq"))
@@ -354,8 +347,11 @@ def answer_pending_messages(
             answered += 1
             continue
         planning_context = client.get_planning_context(recent_chat_limit)
-        if instructions is None:
-            instructions = load_instruction_bundle(instruction_bundle_dir)
+        purpose = _prompt_purpose(planning_context)
+        if purpose not in instructions:
+            instructions[purpose] = load_instruction_bundle(
+                instruction_bundle_dir, purpose=purpose
+            )
         if descriptor is None:
             descriptor = client.get_agent_descriptor()
         decision = build_decision(
@@ -363,7 +359,7 @@ def answer_pending_messages(
             message=message,
             planning_context=planning_context,
             descriptor=descriptor,
-            instructions=instructions,
+            instructions=instructions[purpose],
         )
         outcome = execute_decision(
             client=client,
@@ -380,10 +376,8 @@ def answer_pending_messages(
         training_plans_written += int(outcome.training_plan_written)
         if message.get("visibility") != "control" and update_coaching_notes(
             client=client,
-            model=model,
             seq=seq,
-            user_message=content,
-            assistant_reply=safe_outcome_reply,
+            capture=decision.note_capture,
         ):
             notes_written += 1
     return LoopStats(
@@ -443,7 +437,7 @@ def build_decision(
             "content": user_content,
         },
         "trustedExerciseMediaCatalog": _trusted_media_catalog(planning_context),
-        "planningContext": planning_context,
+        "planningContext": _model_planning_context(planning_context),
     }
     raw = model.chat(
         [
@@ -452,8 +446,12 @@ def build_decision(
                 content=(
                     ORCHESTRATOR_SYSTEM_PROMPT
                     + safety_suffix
-                    + "\n\n--- INSTALLED T4L INSTRUCTIONS ---\n"
-                    + instructions
+                    + (
+                        "\n\n--- RELEVANT INSTALLED T4L INSTRUCTIONS ---\n"
+                        + instructions
+                        if instructions
+                        else ""
+                    )
                 ),
             ),
             ChatMessage(role="user", content=dumps_compact(prompt)),
@@ -476,17 +474,25 @@ def build_decision(
         return CoachDecision(reply=safe_coach_reply(raw))
     reply = parsed.get("reply")
     safe_reply = safe_coach_reply(reply) if isinstance(reply, str) else ""
+    note_capture = _sanitize_note_capture(parsed.get("notes"))
     write = parsed.get("write")
     if not isinstance(write, dict):
-        return CoachDecision(reply=safe_reply or "I need one more detail.")
+        return CoachDecision(
+            reply=safe_reply or "I need one more detail.",
+            note_capture=note_capture,
+        )
     tool = write.get("tool")
     payload = write.get("payload")
     if not isinstance(tool, str) or not isinstance(payload, dict):
-        return CoachDecision(reply=safe_reply or "I could not prepare that yet.")
+        return CoachDecision(
+            reply=safe_reply or "I could not prepare that yet.",
+            note_capture=note_capture,
+        )
     return CoachDecision(
         reply=safe_reply or "I prepared a proposal for phone review.",
         tool=tool,
         payload=cast(dict[str, Any], payload),
+        note_capture=note_capture,
     )
 
 
@@ -600,7 +606,9 @@ def process_current_training_request(
         },
         planning_context=planning_context,
         descriptor=descriptor,
-        instructions=load_instruction_bundle(instruction_bundle_dir),
+        instructions=load_instruction_bundle(
+            instruction_bundle_dir, purpose="planning"
+        ),
     )
     if decision.tool != "write_training_block_plan":
         if retry_state.record_failure(request_id):
@@ -727,13 +735,16 @@ def _write_safe_chat_reply(client: T4LMcpClient, content: str, seq: int | None) 
     client.write_chat_reply(safe_coach_reply(content), seq)
 
 
-def load_instruction_bundle(bundle_dir: Path | None) -> str:
+def load_instruction_bundle(bundle_dir: Path | None, *, purpose: str) -> str:
     if bundle_dir is None:
         raise ValueError("An installed T4L instruction bundle is required.")
+    files = _INSTRUCTION_FILES_BY_PURPOSE.get(purpose)
+    if files is None:
+        raise ValueError(f"Unknown T4L instruction purpose: {purpose}")
     root = bundle_dir.expanduser().resolve()
     chunks: list[str] = []
     total = 0
-    for relative in _INSTRUCTION_FILES:
+    for relative in files:
         path = (root / relative).resolve()
         try:
             path.relative_to(root)
@@ -747,6 +758,98 @@ def load_instruction_bundle(bundle_dir: Path | None) -> str:
             raise ValueError("Instruction bundle is too large.")
         chunks.append(f"\n### {relative}\n{content.strip()}\n")
     return "".join(chunks)
+
+
+def _prompt_purpose(planning_context: dict[str, Any]) -> str:
+    if not _has_accepted_setup(planning_context):
+        return "onboarding"
+    if _current_training_request(planning_context) is not None:
+        return "planning"
+    return "chat"
+
+
+def _model_planning_context(
+    planning_context: dict[str, Any],
+) -> dict[str, Any]:
+    """Keep authoritative context and drop broker compatibility copies."""
+
+    result: dict[str, Any] = {
+        key: deepcopy(planning_context[key])
+        for key in ("schema", "planningContractVersion", "generatedAt")
+        if key in planning_context
+    }
+    accepted = planning_context.get("acceptedState")
+    if isinstance(accepted, dict):
+        accepted_copy = deepcopy(accepted)
+        contexts = accepted_copy.get("contexts")
+        if isinstance(contexts, dict):
+            app_snapshot = contexts.get("app_snapshot")
+            if isinstance(app_snapshot, dict):
+                if app_snapshot.get("dayContext") == contexts.get("day_context"):
+                    app_snapshot.pop("dayContext", None)
+                if app_snapshot.get("dailySnapshot") == contexts.get("daily_snapshot"):
+                    app_snapshot.pop("dailySnapshot", None)
+                profile_artifact = contexts.get("athlete_profile")
+                profile = (
+                    profile_artifact.get("profile")
+                    if isinstance(profile_artifact, dict)
+                    else None
+                )
+                fitness_data = app_snapshot.get("fitnessData")
+                if (
+                    isinstance(fitness_data, dict)
+                    and profile is not None
+                    and fitness_data.get("profile") == profile
+                ):
+                    fitness_data.pop("profile", None)
+                # This catalog is supplied once beside planningContext as a
+                # compact exercise-id -> verified URL map.
+                app_snapshot.pop("verifiedExerciseMediaCatalog", None)
+            accepted_copy["contexts"] = _drop_prompt_duplicates(contexts)
+        result["acceptedState"] = accepted_copy
+    requests = planning_context.get("currentRequests")
+    if isinstance(requests, list):
+        result["currentRequests"] = [
+            deepcopy(item)
+            for item in requests
+            if isinstance(item, dict)
+            and item.get("status") == "pending"
+            and item.get("kind") in {"training_block_request", "daily_workout_request"}
+        ]
+    notes = planning_context.get("coachingNotes")
+    if isinstance(notes, dict):
+        result["coachingNotes"] = _drop_prompt_duplicates(deepcopy(notes))
+    chat = planning_context.get("recentChat")
+    if isinstance(chat, list):
+        result["recentChat"] = [
+            {
+                key: deepcopy(item[key])
+                for key in ("seq", "role", "content", "createdAt")
+                if key in item
+            }
+            for item in chat
+            if isinstance(item, dict)
+        ]
+    # Legacy installs have no atomic accepted bundle. Keep only the few old
+    # fallbacks they need; v2 agents never receive these duplicated rows.
+    if _accepted_revision(planning_context) is None:
+        for key in ("dayContext", "recentLogs", "profile", "activeBlock"):
+            value = planning_context.get(key)
+            if value is not None:
+                result[key] = _drop_prompt_duplicates(deepcopy(value))
+    return result
+
+
+def _drop_prompt_duplicates(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_drop_prompt_duplicates(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    return {
+        key: _drop_prompt_duplicates(item)
+        for key, item in value.items()
+        if not (value.get("schema") == "memory_wiki.v1" and key == "byCategory")
+    }
 
 
 def _phase(planning_context: dict[str, Any]) -> dict[str, Any]:
@@ -1524,51 +1627,16 @@ def _is_iso_date(value: object) -> bool:
 def update_coaching_notes(
     *,
     client: T4LMcpClient,
-    model: RuntimeCoach,
     seq: int | None,
-    user_message: str,
-    assistant_reply: str,
+    capture: dict[str, Any] | None,
 ) -> bool:
-    capture = extract_note_capture(
-        model=model,
-        seq=seq,
-        user_message=user_message,
-        assistant_reply=assistant_reply,
-    )
+    capture = _sanitize_note_capture(capture)
     if not capture.get("capture"):
         return False
     notes = client.get_coaching_notes()
     merged = merge_note_capture(notes, capture, seq=seq)
     client.write_coaching_notes(merged)
     return True
-
-
-def extract_note_capture(
-    *,
-    model: RuntimeCoach,
-    seq: int | None,
-    user_message: str,
-    assistant_reply: str,
-) -> dict[str, Any]:
-    raw = model.chat(
-        [
-            ChatMessage(role="system", content=COACHING_NOTE_EXTRACT_PROMPT),
-            ChatMessage(
-                role="user",
-                content=dumps_compact(
-                    {
-                        "sourceSeq": seq,
-                        "userMessage": user_message,
-                        "assistantReply": assistant_reply,
-                    }
-                ),
-            ),
-        ],
-        temperature=0.0,
-        max_tokens=300,
-    )
-    parsed = parse_json_object(raw)
-    return _sanitize_note_capture(parsed)
 
 
 def merge_note_capture(

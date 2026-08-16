@@ -326,9 +326,17 @@ test("a stock OpenClaw config resolves the native main agent", () => {
     resolveAgentId({ config: { agents: { defaults: { model: "customer/model" } } } }, {}),
     "main",
   );
+  assert.equal(
+    resolveAgentId({ config: { agents: { entries: { atlas: {} } } } }, {}),
+    "atlas",
+  );
   assert.throws(
-    () => resolveAgentId({ config: { agents: { list: [{ id: "one" }, { id: "two" }] } } }, {}),
+    () => resolveAgentId({ config: { agents: { entries: { one: {}, two: {} } } } }, {}),
     /multiple OpenClaw agents/,
+  );
+  assert.equal(
+    resolveAgentId({ config: { agents: { list: [{ id: "legacy" }] } } }, {}),
+    "legacy",
   );
 });
 
@@ -466,6 +474,72 @@ test("custom agent IDs keep the actual default OpenClaw profile", async () => {
     const retry = retryResponse.json();
     assert.equal(retry.requestId, pairingResponse.json().requestId);
     assert.equal(retry.status, "installing");
+
+    const retryStore = new BootstrapPairingStore(
+      join(root, "install", "coach-01"),
+      "coach-01",
+      () => Date.now(),
+      resolveRuntimeIdentity(join(root, "install", "coach-01"), "coach-01"),
+    );
+    const failedRecord = await retryStore.find(retry.requestId);
+    await retryStore.mark(failedRecord, "failed", {
+      error: "ensurepip unavailable",
+      expiresAt: new Date(Date.now() - 1_000).toISOString(),
+    });
+    await writeFile(
+      join(
+        root,
+        "install",
+        "coach-01",
+        "bootstrap",
+        "operations",
+        `${host.operationId}.json`,
+      ),
+      JSON.stringify({
+        schema: "t4l_host_install_operation.v1",
+        operationId: host.operationId,
+        action: "install",
+        agentId: "coach-01",
+        status: "failed",
+        stage: "rolled-back",
+      }),
+    );
+    const failedCompletion = responseRecorder();
+    await routes.get("exact:/v1/pairing/complete")(
+      request("POST", "/v1/pairing/complete", {
+        requestId: retry.requestId,
+        devicePublicKey: Buffer.alloc(32, 4).toString("base64url"),
+        challengeSignature: Buffer.alloc(64, 7).toString("base64url"),
+      }),
+      failedCompletion,
+    );
+    assert.equal(failedCompletion.statusCode, 503);
+    assert.equal(failedCompletion.json().error.retryable, true);
+    assert.equal(failedCompletion.json().bootstrap.operationId, host.operationId);
+    const reusedResponse = responseRecorder();
+    await routes.get("exact:/v1/pairing/requests")(
+      request("POST", "/v1/pairing/requests", {
+        devicePublicKey: Buffer.alloc(32, 4).toString("base64url"),
+        deviceName: "iPhone",
+        platform: "ios",
+      }),
+      reusedResponse,
+    );
+    assert.equal(reusedResponse.json().code, pairingResponse.json().code);
+    assert.equal(reusedResponse.json().status, "failed");
+
+    const resumed = await command.handler({
+      agentId: "coach-01",
+      args: `connect ${pairingResponse.json().code}`,
+      senderId: "U123",
+      channel: "slack",
+      accountId: "default",
+      isAuthorizedSender: true,
+      senderIsOwner: true,
+    });
+    assert.match(resumed.text, /retry started with the same phone pairing/i);
+    assert.equal(spawnCount, 2);
+    assert.equal(await retryStore.find(retry.requestId).then((item) => item.status), "installing");
   } finally {
     for (const [key, value] of Object.entries(previous)) {
       if (value === undefined) delete process.env[key];

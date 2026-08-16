@@ -401,8 +401,8 @@ def test_generated_nutrition_guidance_is_replaced_before_visible_write(
     )
     model = RecordingModel(
         [
-            '{"reply":"Drink 500 ml water and take magnesium.","write":null}',
-            '{"capture":false}',
+            '{"reply":"Drink 500 ml water and take magnesium.",'
+            '"write":null,"notes":null}',
         ]
     )
 
@@ -415,10 +415,9 @@ def test_generated_nutrition_guidance_is_replaced_before_visible_write(
 
     assert stats.answered == 1
     assert client.replies == [(NUTRITION_GUIDANCE_BOUNDARY_REPLY, 5)]
-    assert len(model.messages) == 2
-    note_prompt = model.messages[1][0].content
-    assert "Never capture food, nutrition, hydration" in note_prompt
-    assert "nutrition preferences or constraints" not in note_prompt
+    assert len(model.messages) == 1
+    system_prompt = model.messages[0][0].content
+    assert "Never capture nutrition, hydration" in system_prompt
 
 
 def test_merge_note_capture_appends_new_items_without_duplicates() -> None:
@@ -472,6 +471,131 @@ def test_merge_note_capture_drops_nutrition_content() -> None:
     assert "summaries" not in merged
 
 
+def test_visible_turn_writes_note_patch_from_the_same_model_call(
+    tmp_path: Path,
+) -> None:
+    client = FakeClient(
+        pending=[
+            {
+                "seq": 44,
+                "conversationId": "default",
+                "visibility": "visible",
+                "createdAt": "2026-08-11T09:00:00+00:00",
+                "content": "Use the hotel gym next week.",
+            }
+        ],
+        planning_context=_empty_context(),
+    )
+    model = RecordingModel(
+        [
+            json.dumps(
+                {
+                    "reply": "Got it. What equipment does it have?",
+                    "write": None,
+                    "notes": {
+                        "capture": True,
+                        "athleteRequests": ["Use the hotel gym next week"],
+                        "openQuestions": ["Which hotel-gym equipment is available?"],
+                        "summary": "Travel changes next week's training location.",
+                    },
+                }
+            )
+        ]
+    )
+
+    stats = answer_pending_messages(
+        client=client,  # type: ignore[arg-type]
+        model=model,
+        recent_chat_limit=20,
+        instruction_bundle_dir=_bundle(tmp_path),
+    )
+
+    assert stats.answered == 1
+    assert stats.notes_written == 1
+    assert len(model.messages) == 1
+    assert client.notes["athleteRequests"][0]["text"] == ("Use the hotel gym next week")
+
+
+def test_model_prompt_uses_purpose_instructions_and_deduplicated_v2_context(
+    tmp_path: Path,
+) -> None:
+    context = _accepted_context()
+    profile = context["acceptedState"]["contexts"]["athlete_profile"]["profile"]
+    day_context = {"schema": "day_context.v1", "large": "d" * 2_000}
+    daily_snapshot = {
+        "schema": "daily_snapshot.v1",
+        "memoryWiki": {
+            "schema": "memory_wiki.v1",
+            "entries": [{"text": "Train on Monday"}],
+            "byCategory": {"schedule": [{"text": "Train on Monday"}]},
+        },
+        "large": "s" * 2_000,
+    }
+    app_snapshot = context["acceptedState"]["contexts"]["app_snapshot"]
+    app_snapshot.update(
+        {
+            "dayContext": day_context,
+            "dailySnapshot": daily_snapshot,
+            "fitnessData": {"profile": profile, "other": True},
+        }
+    )
+    context["acceptedState"]["contexts"].update(
+        {"day_context": day_context, "daily_snapshot": daily_snapshot}
+    )
+    context.update(
+        {
+            "dayContext": day_context,
+            "recentLogs": [day_context],
+            "profile": profile,
+            "requestHistory": [context["currentRequests"][0]] * 20,
+            "pendingRequests": context["currentRequests"],
+        }
+    )
+    client = FakeClient(
+        pending=[
+            {
+                "seq": 45,
+                "conversationId": "default",
+                "visibility": "visible",
+                "createdAt": "2026-08-11T09:00:00+00:00",
+                "content": "Prepare the requested block.",
+            }
+        ],
+        planning_context=context,
+    )
+    model = RecordingModel(
+        [
+            '{"reply":"I am preparing the review-only proposal.",'
+            '"write":null,"notes":null}'
+        ]
+    )
+
+    answer_pending_messages(
+        client=client,  # type: ignore[arg-type]
+        model=model,
+        recent_chat_limit=20,
+        instruction_bundle_dir=_bundle(tmp_path),
+    )
+
+    system_prompt = model.messages[0][0].content
+    assert "skills/t4l-write-results/SKILL.md" in system_prompt
+    assert "skills/t4l-onboard-athlete/SKILL.md" not in system_prompt
+    prompt = json.loads(model.messages[0][1].content)
+    projected = prompt["planningContext"]
+    assert "requestHistory" not in projected
+    assert "pendingRequests" not in projected
+    assert "dayContext" not in projected
+    projected_app = projected["acceptedState"]["contexts"]["app_snapshot"]
+    assert "dayContext" not in projected_app
+    assert "dailySnapshot" not in projected_app
+    assert "profile" not in projected_app["fitnessData"]
+    projected_wiki = projected["acceptedState"]["contexts"]["daily_snapshot"][
+        "memoryWiki"
+    ]
+    assert "byCategory" not in projected_wiki
+    assert len(json.dumps(projected)) < len(json.dumps(context)) * 0.6
+
+
 def test_control_turn_uses_verified_intro_and_installed_instructions(
     tmp_path: Path,
 ) -> None:
@@ -508,7 +632,7 @@ def test_control_turn_uses_verified_intro_and_installed_instructions(
     assert "phone controls accepted training state" in reply
     system_prompt = model.messages[0][0].content
     assert "skills/t4l-onboard-athlete/SKILL.md" in system_prompt
-    assert "skills/t4l-write-results/SKILL.md" in system_prompt
+    assert "skills/t4l-write-results/SKILL.md" not in system_prompt
     assert "scope is training and recovery only" in system_prompt
     assert "registered\ndietitian or clinician" in system_prompt
 
@@ -540,7 +664,7 @@ def test_explicit_confirmation_writes_strict_pending_setup_draft(
         },
     }
     client = FakeClient(pending=[message], planning_context=context)
-    model = RecordingModel([json.dumps(decision), '{"capture":false}'])
+    model = RecordingModel([json.dumps(decision)])
 
     stats = answer_pending_messages(
         client=client,  # type: ignore[arg-type]
@@ -602,7 +726,7 @@ def test_setup_write_is_rejected_without_exact_explicit_confirmation(
         ],
         planning_context=context,
     )
-    model = RecordingModel([json.dumps(decision), '{"capture":false}'])
+    model = RecordingModel([json.dumps(decision)])
 
     answer_pending_messages(
         client=client,  # type: ignore[arg-type]
@@ -641,7 +765,7 @@ def test_setup_draft_cannot_smuggle_nutrition_guidance(tmp_path: Path) -> None:
             "payload": payload,
         },
     }
-    model = RecordingModel([json.dumps(decision), '{"capture":false}'])
+    model = RecordingModel([json.dumps(decision)])
 
     stats = answer_pending_messages(
         client=client,  # type: ignore[arg-type]
@@ -680,7 +804,7 @@ def test_setup_write_rejects_unknown_equipment_instead_of_inventing_id(
         ],
         planning_context=context,
     )
-    model = RecordingModel([json.dumps(decision), '{"capture":false}'])
+    model = RecordingModel([json.dumps(decision)])
 
     answer_pending_messages(
         client=client,  # type: ignore[arg-type]
@@ -829,7 +953,7 @@ def test_interactive_plan_revision_race_returns_safe_reply_and_keeps_loop_alive(
         "MCP error -32009: stale context",
         error_code=-32009,
     )
-    model = RecordingModel([json.dumps(decision), '{"capture":false}'])
+    model = RecordingModel([json.dumps(decision)])
 
     stats = answer_pending_messages(
         client=client,  # type: ignore[arg-type]

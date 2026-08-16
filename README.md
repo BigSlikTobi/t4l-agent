@@ -17,6 +17,14 @@ The current production adapter executes OpenClaw agent turns without
 `--deliver`. It does not pass a provider, model, or reasoning override. The
 runtime therefore uses its own active configuration.
 
+For the selected T4L agent, setup disables OpenClaw workspace prompt
+injection, skill injection, and heartbeat turns, and selects the minimal tool
+profile with only `web_search` added for missing exercise-video data. The coach
+loop injects only the instruction slice needed for the current turn, removes
+duplicate phone context, and uses a fresh native session key so old session
+history is not replayed. These settings do not change the configured provider,
+model, or reasoning mode.
+
 ## Hands-off OpenClaw bootstrap
 
 The user does one host-approved action before opening T4L Trainer: install the
@@ -26,11 +34,11 @@ OpenClaw cannot safely let an unauthenticated phone install host software.
 The production command is:
 
 ```bash
-openclaw plugins install npm:@t4l-trainer/openclaw-t4l-connect@0.2.0 --pin --force
+openclaw plugins install npm:@t4l-trainer/openclaw-t4l-connect@0.3.0 --pin --force
 ```
 
-`@t4l-trainer/openclaw-t4l-connect@0.2.0` is public and pins the signed T4L
-v0.3.0 release. The checked-in source policy remains a fail-closed build
+`@t4l-trainer/openclaw-t4l-connect@0.3.0` is public and pins the signed T4L
+v0.3.1 release. The checked-in source policy remains a fail-closed build
 placeholder so an unstaged source package cannot masquerade as production. For
 local development, build the tarball and install its absolute path:
 
@@ -38,7 +46,7 @@ local development, build the tarball and install its absolute path:
 cd openclaw_plugins/t4l-connect
 T4L_ALLOW_PLACEHOLDER_PACKAGE=development-only npm pack
 openclaw plugins install \
-  npm-pack:/absolute/path/t4l-openclaw-t4l-connect-0.2.0.tgz --force
+  npm-pack:/absolute/path/t4l-openclaw-t4l-connect-0.3.0.tgz --force
 ```
 
 After that, the app needs only the existing Gateway address. It discovers the
@@ -47,6 +55,10 @@ owner sends that message in Slack or another authenticated OpenClaw owner
 channel. The command is handled before the model. It starts the deterministic
 host installer, adopts the same pairing request, and switches the same Gateway
 URL to the connector. No second code is required.
+
+If installation fails and rolls back, the same phone can retry with the same
+`/t4l connect CODE` command during its completion window. A retry does not burn
+the pairing code or create a second request.
 
 The phone never receives SSH credentials, a provider key, an OpenClaw admin
 token, the connector runtime token, or the MCP key.
@@ -80,7 +92,7 @@ export PIPX_DEFAULT_PYTHON=python3.12
 pipx install \
   --python python3.12 \
   --preinstall /absolute/path/to/t4l-server/dist/t4l_server-0.8.0-py3-none-any.whl \
-  /absolute/path/to/t4l-agent/dist/t4l_agent-0.3.0-py3-none-any.whl
+  /absolute/path/to/t4l-agent/dist/t4l_agent-0.3.1-py3-none-any.whl
 ```
 
 This advanced development command may fetch third-party dependencies from

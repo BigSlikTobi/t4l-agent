@@ -672,7 +672,6 @@ export class HostInstaller {
       const instructionsDir = join(releaseDir, "instructions");
       const wheelhouseDir = join(releaseDir, "wheelhouse");
       if (!request.dryRun) {
-        await this.#mustRun([request.pythonExecutable || "python3", "-m", "venv", venvDir]);
         await mkdir(wheelhouseDir, { recursive: true, mode: 0o700 });
         await this.#mustRun([
           request.pythonExecutable || "python3",
@@ -680,7 +679,19 @@ export class HostInstaller {
           artifactPaths.get("t4l-python-wheelhouse"),
           wheelhouseDir,
         ]);
+        // Debian/Ubuntu can ship `venv` without the ensurepip payload. Build
+        // the isolation layer without ensurepip, then run the release-pinned
+        // pip wheel directly from PYTHONPATH. No apt install or network access
+        // is needed on the customer's host.
+        await this.#mustRun([
+          request.pythonExecutable || "python3",
+          "-m",
+          "venv",
+          "--without-pip",
+          venvDir,
+        ]);
         const python = join(venvDir, "bin", "python");
+        const pipWheel = await this.#bundledPipWheel(wheelhouseDir);
         await this.#mustRun([
           python,
           "-m",
@@ -690,9 +701,18 @@ export class HostInstaller {
           "--find-links",
           wheelhouseDir,
           "--disable-pip-version-check",
+          "--no-cache-dir",
           artifactPaths.get("t4l-server-wheel"),
           artifactPaths.get("t4l-agent-wheel"),
-        ]);
+        ], {
+          env: {
+            PYTHONPATH: pipWheel,
+            PYTHONNOUSERSITE: "1",
+            PIP_NO_INDEX: "1",
+            PIP_DISABLE_PIP_VERSION_CHECK: "1",
+            PIP_CONFIG_FILE: "/dev/null",
+          },
+        });
         await mkdir(instructionsDir, { recursive: true, mode: 0o700 });
         await this.#mustRun([
           request.pythonExecutable || "python3",
@@ -833,6 +853,20 @@ export class HostInstaller {
     if (result.code !== 0 || !match) {
       throw new Error("T4L release v1 requires CPython 3.11, 3.12, or 3.13");
     }
+  }
+
+  async #bundledPipWheel(wheelhouseDir) {
+    const expected = "pip-26.1.2-py3-none-any.whl";
+    const names = await readdir(wheelhouseDir);
+    if (names.filter((name) => name === expected).length !== 1) {
+      throw new Error(`signed wheelhouse must contain exactly ${expected}`);
+    }
+    const path = join(wheelhouseDir, expected);
+    const info = await lstat(path);
+    if (info.isSymbolicLink() || !info.isFile()) {
+      throw new Error("signed wheelhouse pip entry is unsafe");
+    }
+    return path;
   }
 
   async #download(url, maximum) {

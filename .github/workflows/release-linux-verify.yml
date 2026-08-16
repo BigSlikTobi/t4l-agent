@@ -46,7 +46,7 @@ jobs:
         run: |
           mkdir -p build/release build/plugin build/receipts
           release_id="$(gh api "repos/$GITHUB_REPOSITORY/releases" \
-            --jq '.[] | select(.draft and .tag_name == "v0.3.0") | .id')"
+            --jq '.[] | select(.draft and .tag_name == "v0.3.1") | .id')"
           test -n "$release_id"
           gh api "repos/$GITHUB_REPOSITORY/releases/$release_id/assets" \
             --jq '.[] | [.id, .name] | @tsv' |
@@ -54,7 +54,7 @@ jobs:
               gh api "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" \
                 -H "Accept: application/octet-stream" > "build/release/$asset_name"
             done
-          tar -xzf build/release/t4l-trainer-openclaw-t4l-connect-0.2.0.tgz \
+          tar -xzf build/release/t4l-trainer-openclaw-t4l-connect-0.3.0.tgz \
             -C build/plugin --strip-components=1
 
       - name: Verify offline install and OpenClaw lifecycle
@@ -73,12 +73,12 @@ jobs:
           sudo iptables -A OUTPUT -o lo -j ACCEPT
           python scripts/release_tools.py verify-target \
             --target linux-x64-cp${{ matrix.cp }} \
-            --release-id t4l-agent-0.3.0 \
-            --version 0.3.0 \
-            --agent-wheel build/release/t4l_agent-0.3.0-py3-none-any.whl \
+            --release-id t4l-agent-0.3.1 \
+            --version 0.3.1 \
+            --agent-wheel build/release/t4l_agent-0.3.1-py3-none-any.whl \
             --server-wheel build/release/t4l_server-0.8.0-py3-none-any.whl \
-            --wheelhouse build/release/t4l-python-wheelhouse-0.3.0.tar.gz \
-            --instructions build/release/t4l-agent-instructions-0.3.0.tar.gz \
+            --wheelhouse build/release/t4l-python-wheelhouse-0.3.1.tar.gz \
+            --instructions build/release/t4l-agent-instructions-0.3.1.tar.gz \
             --staged-plugin "$GITHUB_WORKSPACE/build/plugin" \
             --output build/receipts/linux-x64-cp${{ matrix.cp }}.json \
             --plugin-smoke-command "$GITHUB_WORKSPACE/scripts/openclaw_lifecycle_smoke.py"

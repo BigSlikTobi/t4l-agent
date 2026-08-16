@@ -61,7 +61,7 @@ function equalText(left, right) {
 
 function pairingSummary(record) {
   const proofExpiresAt =
-    record.status === "installing" && record.completionExpiresAt
+    record.confirmedAt && record.completionExpiresAt
       ? record.completionExpiresAt
       : record.expiresAt;
   return {
@@ -79,6 +79,19 @@ function pairingSummary(record) {
     status: record.status,
     failedAttempts: record.failedAttempts,
   };
+}
+
+function retryableFailed(record, now) {
+  return (
+    record.status === "failed" &&
+    record.confirmedAt &&
+    record.completionExpiresAt &&
+    new Date(record.completionExpiresAt).getTime() > now
+  );
+}
+
+function activePairing(record, now) {
+  return ["pending", "installing"].includes(record.status) || retryableFailed(record, now);
 }
 
 function deviceId(publicKey) {
@@ -114,6 +127,22 @@ export function resolveAgentId(api, config) {
   if (explicit && ID_RE.test(explicit)) return explicit;
   const fromEnv = safeString(process.env.T4L_AGENT_ID, 64);
   if (fromEnv && ID_RE.test(fromEnv)) return fromEnv;
+  const entries = api?.config?.agents?.entries;
+  if (entries && typeof entries === "object" && !Array.isArray(entries)) {
+    const valid = Object.entries(entries).filter(([id, item]) =>
+      ID_RE.test(id) && item && typeof item === "object" && !Array.isArray(item));
+    if (valid.length !== Object.keys(entries).length) {
+      throw new Error("T4L found an invalid OpenClaw agents.entries map.");
+    }
+    if (valid.length === 1) return valid[0][0];
+    if (valid.length > 1) {
+      throw new Error(
+        "T4L found multiple OpenClaw agents. Set plugin config agentId once.",
+      );
+    }
+  }
+  // Keep the retired roster readable for already-installed profiles. New
+  // OpenClaw configs use agents.entries.
   const listed = api?.config?.agents?.list;
   if (Array.isArray(listed)) {
     const valid = listed.filter((item) => {
@@ -189,7 +218,7 @@ export class BootstrapPairingStore {
     await mkdir(this.pairingDir, { recursive: true, mode: 0o700 });
     await this.#prune();
     const active = (await this.#records()).filter((record) =>
-      ["pending", "installing"].includes(record.status),
+      activePairing(record, this.now()),
     );
     const samePhone = active.find(
       (record) => record.devicePublicKey === publicKey,
@@ -271,7 +300,11 @@ export class BootstrapPairingStore {
       if (!salt) continue;
       const digest = hashCode(normalized.replaceAll("-", ""), salt);
       if (equalText(digest, record.codeHash)) {
-        if (new Date(record.expiresAt).getTime() <= now) {
+        const deadline =
+          record.confirmedAt && record.completionExpiresAt
+            ? new Date(record.completionExpiresAt).getTime()
+            : new Date(record.expiresAt).getTime();
+        if (deadline <= now) {
           if (record.status === "pending") {
             await this.#update(record, { status: "expired" });
           }
@@ -340,6 +373,29 @@ export class BootstrapPairingStore {
       return current
         ? this.#update(current, { status, ...details })
         : record;
+    });
+  }
+
+  async retry(record, owner) {
+    return this.#withMutationLock(async () => {
+      const current = await this.find(record.requestId);
+      if (current?.status === "installing") {
+        return { record: current, started: false };
+      }
+      if (
+        !current ||
+        !retryableFailed(current, this.now()) ||
+        current.channel !== owner.channel ||
+        current.verifiedAccountId !== owner.accountId ||
+        current.verifiedSenderId !== owner.senderId
+      ) {
+        throw new Error("failed pairing is not retryable by this owner");
+      }
+      const updated = await this.#update(current, {
+        status: "installing",
+        error: undefined,
+      });
+      return { record: updated, started: true };
     });
   }
 
@@ -519,7 +575,7 @@ export function bootstrapDiscovery(agentId, operation = null) {
     bootstrap: {
       status: operation?.status || "ready",
       package: "@t4l-trainer/openclaw-t4l-connect",
-      version: "0.2.0",
+      version: "0.3.0",
       installCommand: "/t4l connect CODE",
       retryAfterSeconds: 3,
       ...(operation?.operationId ? { operationId: operation.operationId } : {}),

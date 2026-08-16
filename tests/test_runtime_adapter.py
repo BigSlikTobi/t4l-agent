@@ -114,6 +114,14 @@ class FakeOpenClawRunner:
         self.expose_install_path = expose_install_path
         self.version = version
         self.skill_dirs: list[str] = []
+        self.agent_entries: dict[str, dict[str, object]] = {
+            "agent-02": {
+                "model": "customer-provider/customer-model",
+                "thinkingDefault": "high",
+                "reasoningDefault": "on",
+            }
+        }
+        self.listed_agent_ids = {"agent-02"}
         self.mcp_config: dict[str, object] | None = None
         self.plugin_config: dict[str, object] = {
             "installRoot": "/srv/t4l/agent-02",
@@ -144,7 +152,36 @@ class FakeOpenClawRunner:
         if command == ("config", "get", "agents.defaults.model", "--json"):
             return CommandResult(0, '{"primary":"customer-provider/customer-model"}')
         if command == ("agents", "list", "--json"):
-            return CommandResult(0, '{"agents":[{"id":"agent-02"}]}')
+            return CommandResult(
+                0,
+                json.dumps(
+                    {
+                        "agents": [
+                            {
+                                "id": agent_id,
+                                **self.agent_entries.get(agent_id, {}),
+                            }
+                            for agent_id in sorted(self.listed_agent_ids)
+                        ]
+                    }
+                ),
+            )
+        if command == ("config", "get", "agents.entries", "--json"):
+            return CommandResult(0, json.dumps(self.agent_entries))
+        if command == ("config", "get", "agents.list", "--json"):
+            return CommandResult(1, stderr="Config path not found")
+        if command[:2] == ("config", "set") and command[2].startswith(
+            "agents.entries."
+        ):
+            agent_id = command[2].removeprefix("agents.entries.")
+            self.agent_entries[agent_id] = json.loads(command[3])
+            return CommandResult(0)
+        if command[:2] == ("config", "unset") and command[2].startswith(
+            "agents.entries."
+        ):
+            agent_id = command[2].removeprefix("agents.entries.")
+            self.agent_entries.pop(agent_id, None)
+            return CommandResult(0)
         if command[:3] == ("plugins", "inspect", "t4l-connect"):
             if not self.installed:
                 return CommandResult(1)
@@ -152,12 +189,12 @@ class FakeOpenClawRunner:
                 "plugin": {
                     "id": "t4l-connect",
                     "packageName": "@t4l-trainer/openclaw-t4l-connect",
-                    "version": "0.2.0",
+                    "version": "0.3.0",
                     "source": str(self.install_path / "dist" / "index.js"),
                 },
                 "install": {
                     "source": "path",
-                    "version": "0.2.0",
+                    "version": "0.3.0",
                 },
                 "commands": ["t4l"],
             }
@@ -557,6 +594,21 @@ def test_openclaw_bootstrap_requires_every_live_readiness_check(
     assert result.checks["runtimeAgent"] is True
     assert result.checks["pluginIntegrity"] is True
     assert result.checks["mcp"] is True
+    assert result.checks["tokenPolicy"] is True
+    assert runner.agent_entries == {
+        "agent-02": {
+            "model": "customer-provider/customer-model",
+            "thinkingDefault": "high",
+            "reasoningDefault": "on",
+            "contextInjection": "never",
+            "skills": [],
+            "tools": {
+                "profile": "minimal",
+                "alsoAllow": ["web_search"],
+            },
+            "heartbeat": {"every": "0m"},
+        }
+    }
     agent_calls = [call for call in runner.calls if "agent" in call]
     assert len(agent_calls) == 1
     agent_index = runner.calls.index(agent_calls[0])
@@ -565,6 +617,46 @@ def test_openclaw_bootstrap_requires_every_live_readiness_check(
     assert "--thinking" not in agent_calls[0]
     assert "--provider" not in agent_calls[0]
     assert "--model" not in agent_calls[0]
+
+
+def test_openclaw_lean_policy_restores_an_implicit_agent_entry(
+    tmp_path: Path,
+) -> None:
+    home = (tmp_path / "agent-02" / "home").resolve()
+    state = (tmp_path / "agent-02" / "state").resolve()
+    state.mkdir(parents=True)
+    config_path = state / "openclaw.json"
+    config_path.write_text("{}\n", encoding="utf-8")
+    target = RuntimeTarget(
+        runtime=RuntimeKind.OPENCLAW,
+        agent_id="agent-02",
+        profile="agent-02",
+        home_dir=home,
+        state_dir=state,
+        executable="openclaw",
+    )
+    runner = FakeOpenClawRunner(config_path)
+    runner.agent_entries = {}
+    adapter = OpenClawRuntimeAdapter(runner=runner)
+    spec = BootstrapSpec(
+        target=target,
+        t4l_server_url="http://127.0.0.1:8787/mcp",
+        instruction_bundle_dir=_bundle(tmp_path),
+        connector_base_url="http://127.0.0.1:8787",
+        openclaw_plugin_dir=(
+            Path(__file__).parents[1] / "openclaw_plugins" / "t4l-connect"
+        ).resolve(),
+    )
+
+    assert adapter.bootstrap(spec).ok
+    assert runner.agent_entries["agent-02"]["contextInjection"] == "never"
+    snapshot = adapter.snapshot(target)
+    assert snapshot.ok and snapshot.rollback_id is not None
+
+    removed = adapter.uninstall(spec, snapshot.rollback_id)
+
+    assert removed.ok
+    assert runner.agent_entries == {}
 
 
 def test_openclaw_verifies_mcp_env_reference_without_reading_real_secret(
@@ -676,6 +768,13 @@ def test_openclaw_update_replaces_owned_skill_and_preserves_bootstrap_config(
         "installRoot": "/srv/t4l/agent-02",
         "serviceMode": "systemd",
         "agentId": "agent-02",
+    }
+    assert runner.agent_entries == {
+        "agent-02": {
+            "model": "customer-provider/customer-model",
+            "thinkingDefault": "high",
+            "reasoningDefault": "on",
+        }
     }
 
 

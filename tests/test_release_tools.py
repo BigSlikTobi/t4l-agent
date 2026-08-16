@@ -176,6 +176,7 @@ def test_deterministic_instruction_archive_and_exact_wheelhouse_lock(
             "cryptography-46.0.7-cp311-abi3-manylinux_2_17_x86_64.whl",
             "cryptography-46.0.7-cp311-abi3-macosx_10_9_universal2.whl",
             "pycparser-3.0-py3-none-any.whl",
+            "pip-26.1.2-py3-none-any.whl",
         ]
     )
     contents = {name: name.encode() for name in wheel_names}

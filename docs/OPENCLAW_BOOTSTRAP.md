@@ -6,10 +6,10 @@ Raw OpenClaw cannot accept host software from an unauthenticated phone. The
 owner must approve one bootstrap plugin install in OpenClaw Control UI or run:
 
 ```bash
-openclaw plugins install npm:@t4l-trainer/openclaw-t4l-connect@0.2.0 --pin --force
+openclaw plugins install npm:@t4l-trainer/openclaw-t4l-connect@0.3.0 --pin --force
 ```
 
-That exact package is public and pins the signed T4L v0.3.0 release. The source
+That exact package is public and pins the signed T4L v0.3.1 release. The source
 policy intentionally remains a fail-closed placeholder; production packages
 are staged with the real release key and manifest before publication.
 
@@ -27,6 +27,12 @@ The user flow is:
 No provider key, OpenClaw operator token, connector runtime token, MCP key, or
 SSH credential reaches the phone.
 
+If host installation fails after owner confirmation, the installer rolls back
+and keeps that phone request for the rest of its 30-minute completion window.
+Fix the host problem, then resend the exact same `/t4l connect XXXX-XXXX`
+command. The same request, code, and operation are retried. The phone must not
+create a replacement pairing.
+
 ## Host requirements
 
 - OpenClaw `>=2026.7.1-2` and `<2027.0.0`.
@@ -36,6 +42,11 @@ SSH credential reaches the phone.
 - One stable OpenClaw agent ID. Ambiguous multi-agent profiles must set
   `agentId` in the plugin config once.
 - A trusted way for the owner to send the command before the model sees it.
+
+The signed wheelhouse includes `pip==26.1.2`. The installer creates the venv
+with `--without-pip` and runs that pinned wheel directly. A Debian or Ubuntu
+host therefore does not need a manual `pythonX.Y-venv` install just to provide
+`ensurepip`.
 
 The installer resolves the real OpenClaw executable during owner approval and
 stores absolute executable and config paths. `OPENCLAW_STATE_DIR` and
@@ -68,6 +79,22 @@ already claimed by another agent fails closed.
 Use a separate OpenClaw profile, state directory, public hostname, and T4L root
 for each coach. Sharing an OpenClaw profile mixes plugin and skill config and is
 not supported.
+
+## Lean agent policy
+
+Post-pair setup applies these settings only to the selected T4L agent:
+
+- no OpenClaw workspace/bootstrap prompt injection;
+- no OpenClaw skill injection;
+- the minimal tool profile plus `web_search` for missing exercise-video data;
+- no heartbeat turns.
+
+The T4L coach loop supplies one purpose-specific instruction slice and one
+deduplicated phone context per turn. Each native call uses a fresh session key,
+so old OpenClaw session history is not replayed. Durable coaching notes are
+captured in the same model response instead of a second model call. Provider,
+model, and reasoning settings are preserved. Uninstall restores the four prior
+policy areas when they were not changed after T4L applied them.
 
 ## Lifecycle commands
 

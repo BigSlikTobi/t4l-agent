@@ -111,12 +111,8 @@ def test_executes_configured_runtime_without_provider_or_reasoning_override() ->
         {"role": "system", "content": "Return JSON."},
         {"role": "user", "content": "Build my plan."},
     ]
-    assert envelope["hostHints"] == {
-        "temperature": 0.0,
-        "maxOutputTokens": 900,
-        "researchToolsAllowed": True,
-        "researchScope": "youtube.com",
-    }
+    assert "hostHints" not in envelope
+    assert "web_search is the only allowed tool" in envelope["contract"]
 
 
 def test_metadata_is_descriptive_and_accepts_any_runtime_values() -> None:
@@ -141,6 +137,23 @@ def test_readiness_uses_runtime_defaults_and_does_not_deliver() -> None:
     assert "--thinking" not in argv
     assert "--provider" not in argv
     assert "--model" not in argv
+
+
+def test_identical_turns_use_fresh_sessions_without_history_replay() -> None:
+    runner = RecordingRunner(_result())
+    coach = _coach(runner)
+    messages = [ChatMessage(role="user", content="same bounded turn")]
+
+    coach.chat(messages)
+    coach.chat(messages)
+
+    first = runner.calls[0][0]
+    second = runner.calls[1][0]
+    first_key = first[first.index("--session-key") + 1]
+    second_key = second[second.index("--session-key") + 1]
+    assert first_key.startswith("t4l-coach-")
+    assert second_key.startswith("t4l-coach-")
+    assert first_key != second_key
 
 
 @pytest.mark.parametrize(

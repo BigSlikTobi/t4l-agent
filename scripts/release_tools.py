@@ -257,15 +257,16 @@ def validate_wheelhouse_archive(path: Path) -> dict[str, Any]:
 
 def _validate_wheel_matrix(names: set[str]) -> None:
     normalized = {name.casefold().replace("-", "_") for name in names}
-    if len(normalized) != 15:
+    if len(normalized) != 16:
         raise ValueError(
-            "wheelhouse must contain the exact 15 pinned dependency wheels"
+            "wheelhouse must contain the exact 16 pinned dependency wheels"
         )
     expected_counts = {
         "pyyaml_6.0.3_": 6,
         "cffi_2.1.1_": 6,
         "cryptography_46.0.7_": 2,
         "pycparser_3.0_": 1,
+        "pip_26.1.2_": 1,
     }
     for prefix, count in expected_counts.items():
         if sum(name.startswith(prefix) for name in normalized) != count:
@@ -274,6 +275,8 @@ def _validate_wheel_matrix(names: set[str]) -> None:
         name.startswith("pycparser_3.0_py3_none_any.whl") for name in normalized
     ):
         raise ValueError("wheelhouse is missing pinned pycparser 3.0")
+    if "pip_26.1.2_py3_none_any.whl" not in normalized:
+        raise ValueError("wheelhouse is missing pinned pip 26.1.2 bootstrap wheel")
     targets = {
         "linux-x64": ("manylinux_2_17_x86_64", "manylinux2014_x86_64"),
         "darwin-arm64": ("macosx_11_0_arm64",),
